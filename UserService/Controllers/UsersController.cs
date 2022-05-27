@@ -13,10 +13,14 @@ namespace UserService.Controllers;
 public class UsersController : ControllerBase
 {
     private readonly UserServiceContext _context;
+    private readonly IntegrationEventSenderService _integrationEventSenderService;
 
-    public UsersController(UserServiceContext context)
+    public UsersController
+        (UserServiceContext context,
+        IntegrationEventSenderService integrationEventSenderService)
     {
         _context = context;
+        _integrationEventSenderService = integrationEventSenderService;
     }
 
     [HttpGet]
@@ -30,23 +34,36 @@ public class UsersController : ControllerBase
     {
         using var transaction = _context.Database.BeginTransaction();
 
-        _context.Entry(user).State = EntityState.Modified;
-        await _context.SaveChangesAsync();
+        var foundedUser = 
+            _context.Set<User>()
+            .FirstOrDefault(c => c.ID == id);
 
-        var integrationEventData = JsonConvert.SerializeObject(new
+        if (foundedUser != null)
         {
-            id = user.ID,
-            newname = user.Name,
-        });
-        _context.IntegrationEventOutbox.Add(
-            new IntegrationEvent()
-            {
-                Event = "user.update",
-                Data = integrationEventData
-            });
+            foundedUser.Name = user.Name;
+            foundedUser.Version += 1;
 
-        _context.SaveChanges();
-        transaction.Commit();
+            await _context.SaveChangesAsync();
+
+            var integrationEventData = JsonConvert.SerializeObject(new
+            {
+                id = foundedUser.ID,
+                newname = foundedUser.Name,
+                version = foundedUser.Version,
+            });
+            _context.IntegrationEventOutbox.Add(
+                new IntegrationEvent()
+                {
+                    Event = "user.update",
+                    Data = integrationEventData
+                });
+
+            _context.SaveChanges();
+            transaction.Commit();
+
+            _integrationEventSenderService
+                .StartPublishingOutstandingIntegrationEvents();
+        }
 
         return NoContent();
     }
@@ -54,6 +71,7 @@ public class UsersController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<User>> PostUser(User user)
     {
+        user.Version = 1;
         using var transaction = _context.Database.BeginTransaction();
         _context.User.Add(user);
         _context.SaveChanges();
@@ -61,7 +79,8 @@ public class UsersController : ControllerBase
         var integrationEventData = JsonConvert.SerializeObject(new
         {
             id = user.ID,
-            name = user.Name
+            name = user.Name,
+            version = user.Version
         });
 
         _context.IntegrationEventOutbox.Add(
@@ -73,6 +92,8 @@ public class UsersController : ControllerBase
 
         _context.SaveChanges();
         transaction.Commit();
+
+        _integrationEventSenderService.StartPublishingOutstandingIntegrationEvents();
 
         return CreatedAtAction("GetUser", new { id = user.ID }, user);
     }

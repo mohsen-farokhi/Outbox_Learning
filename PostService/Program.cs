@@ -44,7 +44,7 @@ static void ListenForIntegrationEvents()
 
     consumer.Received += (model, ea) =>
     {
-        var contextOptions = 
+        var contextOptions =
             new DbContextOptionsBuilder<PostServiceContext>()
             .UseSqlServer(@"Data Source=localhost;Initial Catalog=PostService;User ID=sa;Password=P@ssw0rd;")
             .Options;
@@ -59,22 +59,40 @@ static void ListenForIntegrationEvents()
         var type = ea.RoutingKey;
         if (type == "user.add")
         {
-            dbContext.User.Add(new User()
+            if (dbContext.User.Any(a => a.ID == data["id"].Value<int>()))
             {
-                //ID = data["id"].Value<int>(),
-                Name = data["name"].Value<string>()
-            });
-            dbContext.SaveChanges();
+                Console.WriteLine("Ignoring old/duplicate entity");
+            }
+            else
+            {
+                dbContext.User.Add(new User()
+                {
+                    ID = data["id"].Value<int>(),
+                    Name = data["name"].Value<string>(),
+                    Version = data["version"].Value<int>()
+                });
+
+                dbContext.SaveChanges();
+            }
         }
         else if (type == "user.update")
         {
+            int newVersion = data["version"].Value<int>();
             var user = dbContext.User.First(a => a.ID == data["id"].Value<int>());
-            user.Name = data["newname"].Value<string>();
-            dbContext.SaveChanges();
+            if (user.Version >= newVersion)
+            {
+                Console.WriteLine("Ignoring old/duplicate entity");
+            }
+            else
+            {
+                user.Name = data["newname"].Value<string>();
+                user.Version = newVersion;
+                dbContext.SaveChanges();
+            }
         }
+        channel.BasicAck(ea.DeliveryTag, false);
     };
-
     channel.BasicConsume(queue: "user.postservice",
-                             autoAck: true,
+                             autoAck: false,
                              consumer: consumer);
 }
